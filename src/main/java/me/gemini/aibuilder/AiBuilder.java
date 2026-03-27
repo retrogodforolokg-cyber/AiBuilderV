@@ -6,6 +6,6 @@ public class AiBuilder extends JavaPlugin {
     @Override
     public void onEnable() {
         getCommand("goai").setExecutor(new GoAiCommand());
-        getLogger().info("AiBuilder запущен! Используй /goai в игре.");
+        getLogger().info("AiBuilder enabled!");
     }
 }
