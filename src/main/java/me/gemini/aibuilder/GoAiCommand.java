@@ -4,7 +4,9 @@ import com.google.gson.*;
 import org.bukkit.*;
 import org.bukkit.command.*;
 import org.bukkit.entity.Player;
+import org.bukkit.plugin.Plugin;
 import org.jetbrains.annotations.NotNull;
+
 import java.net.URI;
 import java.net.http.*;
 import java.time.Duration;
@@ -14,90 +16,98 @@ public class GoAiCommand implements CommandExecutor {
 
     private final String API_KEY = "AIzaSyD4ZaA-ED5-NIftpWpDUNjQREwI1THzMgI";
     private final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
+    private final Plugin plugin = Bukkit.getPluginManager().getPlugin("AiBuilder");
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd, @NotNull String label, @NotNull String[] args) {
         if (!(sender instanceof Player player)) return true;
         if (args.length == 0) {
-            player.sendMessage("§cНапиши: /goai <что построить>");
+            player.sendMessage("§cИспользование: /goai <что построить>");
             return true;
         }
 
-        String prompt = String.join(" ", args);
-        player.sendMessage("§6[ИИ] §eПроектирую чертёж... Подожди 5-10 сек.");
+        String userRequest = String.join(" ", args);
+        player.sendMessage("§6[ИИ] §eСвязываюсь с архитектором...");
 
-        Bukkit.getScheduler().runTaskAsynchronously(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
+        Bukkit.getScheduler().runTaskAsynchronously(plugin, () -> {
             try {
-                String response = askGemini(prompt);
-                processBuild(player, response);
+                // Создаем запрос максимально просто
+                String prompt = "Create a Minecraft schematic for: " + userRequest + 
+                                ". Output ONLY a JSON array like: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. " +
+                                "Use block names from Minecraft 1.21. No text before or after.";
+                
+                String jsonInput = "{\"contents\":[{\"parts\":[{\"text\":\"" + prompt + "\"}]}]}";
+
+                HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build();
+                HttpRequest request = HttpRequest.newBuilder()
+                        .uri(URI.create(API_URL))
+                        .header("Content-Type", "application/json")
+                        .POST(HttpRequest.BodyPublishers.ofString(jsonInput))
+                        .build();
+
+                HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+                String responseBody = response.body();
+
+                Bukkit.getScheduler().runTask(plugin, () -> handleResponse(player, responseBody));
+
             } catch (Exception e) {
-                player.sendMessage("§cОшибка сети: " + e.getMessage());
+                Bukkit.getScheduler().runTask(plugin, () -> player.sendMessage("§cОшибка связи: " + e.getMessage()));
             }
         });
         return true;
     }
 
-    private String askGemini(String userPrompt) throws Exception {
-        String systemInstruction = "You are a Minecraft 1.21 Architect. Create: " + userPrompt + 
-            ". Output ONLY a JSON array of blocks. No markdown, no intro. " +
-            "Example: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"OAK_LOG\"}]. " +
-            "Use ONLY official Bukkit Material names.";
-
-        String jsonBody = "{\"contents\":[{\"parts\":[{\"text\":\"" + systemInstruction + "\"}]}]}";
-
-        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
-        HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(API_URL))
-                .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
-                .build();
-
-        return client.send(request, HttpResponse.BodyHandlers.ofString()).body();
-    }
-
-    private void processBuild(Player player, String body) {
+    private void handleResponse(Player player, String body) {
         try {
             JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-            String rawText = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
+            
+            // Проверка на ошибки API
+            if (json.has("error")) {
+                player.sendMessage("§cAPI Error: " + json.getAsJsonObject("error").get("message").getAsString());
+                return;
+            }
+
+            // Проверка на наличие контента
+            if (!json.has("candidates")) {
+                player.sendMessage("§cИИ не ответил. Попробуй другой запрос.");
+                return;
+            }
+
+            String text = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
                     .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
                     .get("text").getAsString();
 
-            // Жесткая очистка: вырезаем всё, что не внутри [ ]
-            Pattern pattern = Pattern.compile("\\[.*?\\]", Pattern.DOTALL);
-            Matcher matcher = pattern.matcher(rawText);
-            
+            // Ищем JSON-массив внутри любого текста
+            Matcher matcher = Pattern.compile("\\[[\\s\\S]*\\]").matcher(text);
             if (!matcher.find()) {
-                throw new Exception("ИИ не прислал массив блоков.");
+                player.sendMessage("§cИИ прислал текст вместо схемы. Попробуй еще раз.");
+                return;
             }
-            
+
             JsonArray blocks = JsonParser.parseString(matcher.group()).getAsJsonArray();
-            Location origin = player.getLocation();
+            Location startLoc = player.getLocation();
+            int builtCount = 0;
 
-            Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
-                int count = 0;
-                for (JsonElement el : blocks) {
-                    try {
-                        JsonObject b = el.getAsJsonObject();
-                        String materialName = b.get("type").getAsString().toUpperCase().replace(" ", "_");
-                        Material m = Material.matchMaterial(materialName);
-                        
-                        if (m == null) m = Material.OAK_PLANKS; // Если ИИ ошибся, строим из досок
-                        if (!m.isBlock()) continue;
+            for (JsonElement el : blocks) {
+                try {
+                    JsonObject b = el.getAsJsonObject();
+                    Material mat = Material.matchMaterial(b.get("type").getAsString().toUpperCase());
+                    if (mat == null) mat = Material.OAK_PLANKS;
+                    
+                    if (mat.isBlock()) {
+                        startLoc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt())
+                                .getBlock().setType(mat);
+                        builtCount++;
+                    }
+                } catch (Exception ignored) {}
+            }
 
-                        origin.clone().add(
-                            b.get("x").getAsInt(), 
-                            b.get("y").getAsInt(), 
-                            b.get("z").getAsInt()
-                        ).getBlock().setType(m);
-                        count++;
-                    } catch (Exception ignore) {}
-                }
-                player.sendMessage("§a§l[ИИ] Готово! §fПостроено блоков: §e" + count);
-            });
+            player.sendMessage("§a§l[ИИ] Готово! §fРазмещено блоков: §e" + builtCount);
+
         } catch (Exception e) {
-            Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> 
-                player.sendMessage("§cОшибка: " + e.getMessage())
-            );
+            player.sendMessage("§cОшибка обработки: " + e.getMessage());
+            // Вывод в лог для отладки
+            Bukkit.getLogger().warning("[AiBuilder] Response was: " + body);
         }
     }
 }
