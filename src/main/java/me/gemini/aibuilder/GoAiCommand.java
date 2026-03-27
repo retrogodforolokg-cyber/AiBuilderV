@@ -13,8 +13,8 @@ import java.util.regex.*;
 public class GoAiCommand implements CommandExecutor {
 
     private final String API_KEY = "AIzaSyD4ZaA-ED5-NIftpWpDUNjQREwI1THzMgI";
-    // ИСПОЛЬЗУЕМ СТАБИЛЬНУЮ ВЕРСИЮ V1 И FLASH
-    private final String API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
+    // ИСПОЛЬЗУЕМ LATEST ВЕРСИЮ МОДЕЛИ
+    private final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=" + API_KEY;
     private final Gson gson = new Gson();
 
     @Override
@@ -31,16 +31,16 @@ public class GoAiCommand implements CommandExecutor {
         Bukkit.getScheduler().runTaskAsynchronously(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
             try {
                 JsonObject textPart = new JsonObject();
-                textPart.addProperty("text", "Generate Minecraft 1.21 blocks for: " + prompt + ". ONLY JSON array: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. No text.");
+                textPart.addProperty("text", "You are a Minecraft 1.21 builder. Generate JSON blocks for: " + prompt + ". ONLY JSON array: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. No chat.");
 
                 JsonArray parts = new JsonArray();
                 parts.add(textPart);
                 JsonObject content = new JsonObject();
                 content.add("parts", parts);
-                JsonArray contents = new JsonArray();
-                contents.add(content);
+                JsonArray contentsArray = new JsonArray();
+                contentsArray.add(content);
                 JsonObject root = new JsonObject();
-                root.add("contents", contents);
+                root.add("contents", contentsArray);
 
                 HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
                 HttpRequest request = HttpRequest.newBuilder()
@@ -54,35 +54,9 @@ public class GoAiCommand implements CommandExecutor {
 
                 Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
                     try {
-                        JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-                        if (json.has("error")) {
-                            player.sendMessage("§cОшибка API: " + json.getAsJsonObject("error").get("message").getAsString());
-                            return;
-                        }
-
-                        String rawText = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
-                                .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
-                                .get("text").getAsString();
-
-                        Matcher m = Pattern.compile("\\[[\\s\\S]*\\]").matcher(rawText);
-                        if (!m.find()) throw new Exception("Массив не найден");
-
-                        JsonArray blocks = JsonParser.parseString(m.group()).getAsJsonArray();
-                        Location loc = player.getLocation();
-                        int count = 0;
-
-                        for (JsonElement el : blocks) {
-                            JsonObject b = el.getAsJsonObject();
-                            Material mat = Material.matchMaterial(b.get("type").getAsString().toUpperCase());
-                            if (mat == null) mat = Material.STONE;
-                            loc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt()).getBlock().setType(mat);
-                            count++;
-                        }
-                        player.sendMessage("§a§l[ИИ] Успех! §fБлоков: §e" + count);
-
+                        handleResponse(player, body);
                     } catch (Exception e) {
-                        player.sendMessage("§cОшибка обработки. Попробуй еще раз.");
-                        System.out.println("DEBUG: " + body);
+                        player.sendMessage("§cОшибка обработки. Ответ сервера: " + (body.length() > 50 ? body.substring(0, 50) : body));
                     }
                 });
             } catch (Exception e) {
@@ -90,5 +64,34 @@ public class GoAiCommand implements CommandExecutor {
             }
         });
         return true;
+    }
+
+    private void handleResponse(Player player, String body) throws Exception {
+        JsonObject json = JsonParser.parseString(body).getAsJsonObject();
+        if (json.has("error")) {
+            player.sendMessage("§cGoogle Error: " + json.getAsJsonObject("error").get("message").getAsString());
+            return;
+        }
+
+        String rawText = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
+                .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
+                .get("text").getAsString();
+
+        Matcher m = Pattern.compile("\\[[\\s\\S]*\\]").matcher(rawText);
+        if (m.find()) {
+            JsonArray blocks = JsonParser.parseString(m.group()).getAsJsonArray();
+            Location loc = player.getLocation();
+            int count = 0;
+            for (JsonElement el : blocks) {
+                JsonObject b = el.getAsJsonObject();
+                Material mat = Material.matchMaterial(b.get("type").getAsString().toUpperCase());
+                if (mat == null) mat = Material.STONE;
+                loc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt()).getBlock().setType(mat);
+                count++;
+            }
+            player.sendMessage("§a§l[ИИ] Успех! §fБлоков: §e" + count);
+        } else {
+            player.sendMessage("§cИИ прислал текст вместо чертежа.");
+        }
     }
 }
