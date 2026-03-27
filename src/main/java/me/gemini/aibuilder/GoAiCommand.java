@@ -8,12 +8,12 @@ import org.jetbrains.annotations.NotNull;
 import java.net.URI;
 import java.net.http.*;
 import java.time.Duration;
+import java.util.regex.*;
 
 public class GoAiCommand implements CommandExecutor {
 
     private final String API_KEY = "AIzaSyD4ZaA-ED5-NIftpWpDUNjQREwI1THzMgI";
     private final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
-    private final Gson gson = new Gson();
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd, @NotNull String label, @NotNull String[] args) {
@@ -24,40 +24,32 @@ public class GoAiCommand implements CommandExecutor {
         }
 
         String prompt = String.join(" ", args);
-        player.sendMessage("§6[ИИ] §eПроектирую чертеж...");
+        player.sendMessage("§6[ИИ] §eПроектирую чертёж... Подожди 5-10 сек.");
 
         Bukkit.getScheduler().runTaskAsynchronously(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
             try {
                 String response = askGemini(prompt);
                 processBuild(player, response);
             } catch (Exception e) {
-                player.sendMessage("§cОшибка: " + e.getMessage());
+                player.sendMessage("§cОшибка сети: " + e.getMessage());
             }
         });
         return true;
     }
 
     private String askGemini(String userPrompt) throws Exception {
-        String system = "You are a Minecraft builder. Generate a structure: " + userPrompt + 
-            ". Return ONLY a JSON array like: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. " +
-            "Max 150 blocks. Use 1.21.4 Material names.";
+        String systemInstruction = "You are a Minecraft 1.21 Architect. Create: " + userPrompt + 
+            ". Output ONLY a JSON array of blocks. No markdown, no intro. " +
+            "Example: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"OAK_LOG\"}]. " +
+            "Use ONLY official Bukkit Material names.";
 
-        JsonObject root = new JsonObject();
-        JsonArray contents = new JsonArray();
-        JsonObject part = new JsonObject();
-        JsonArray parts = new JsonArray();
-        JsonObject text = new JsonObject();
-        text.addProperty("text", system);
-        parts.add(text);
-        part.add("parts", parts);
-        contents.add(part);
-        root.add("contents", contents);
+        String jsonBody = "{\"contents\":[{\"parts\":[{\"text\":\"" + systemInstruction + "\"}]}]}";
 
-        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(10)).build();
+        HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
         HttpRequest request = HttpRequest.newBuilder()
                 .uri(URI.create(API_URL))
                 .header("Content-Type", "application/json")
-                .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(root)))
+                .POST(HttpRequest.BodyPublishers.ofString(jsonBody))
                 .build();
 
         return client.send(request, HttpResponse.BodyHandlers.ofString()).body();
@@ -66,25 +58,46 @@ public class GoAiCommand implements CommandExecutor {
     private void processBuild(Player player, String body) {
         try {
             JsonObject json = JsonParser.parseString(body).getAsJsonObject();
-            String raw = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
+            String rawText = json.getAsJsonArray("candidates").get(0).getAsJsonObject()
                     .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
                     .get("text").getAsString();
 
-            String cleanJson = raw.substring(raw.indexOf("["), raw.lastIndexOf("]") + 1);
-            JsonArray blocks = JsonParser.parseString(cleanJson).getAsJsonArray();
-            Location loc = player.getLocation();
+            // Жесткая очистка: вырезаем всё, что не внутри [ ]
+            Pattern pattern = Pattern.compile("\\[.*?\\]", Pattern.DOTALL);
+            Matcher matcher = pattern.matcher(rawText);
+            
+            if (!matcher.find()) {
+                throw new Exception("ИИ не прислал массив блоков.");
+            }
+            
+            JsonArray blocks = JsonParser.parseString(matcher.group()).getAsJsonArray();
+            Location origin = player.getLocation();
 
             Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
+                int count = 0;
                 for (JsonElement el : blocks) {
-                    JsonObject b = el.getAsJsonObject();
-                    Material m = Material.matchMaterial(b.get("type").getAsString().toUpperCase());
-                    if (m == null) m = Material.STONE;
-                    loc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt()).getBlock().setType(m);
+                    try {
+                        JsonObject b = el.getAsJsonObject();
+                        String materialName = b.get("type").getAsString().toUpperCase().replace(" ", "_");
+                        Material m = Material.matchMaterial(materialName);
+                        
+                        if (m == null) m = Material.OAK_PLANKS; // Если ИИ ошибся, строим из досок
+                        if (!m.isBlock()) continue;
+
+                        origin.clone().add(
+                            b.get("x").getAsInt(), 
+                            b.get("y").getAsInt(), 
+                            b.get("z").getAsInt()
+                        ).getBlock().setType(m);
+                        count++;
+                    } catch (Exception ignore) {}
                 }
-                player.sendMessage("§aГотово!");
+                player.sendMessage("§a§l[ИИ] Готово! §fПостроено блоков: §e" + count);
             });
         } catch (Exception e) {
-            player.sendMessage("§cОшибка чертежа.");
+            Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> 
+                player.sendMessage("§cОшибка: " + e.getMessage())
+            );
         }
     }
 }
