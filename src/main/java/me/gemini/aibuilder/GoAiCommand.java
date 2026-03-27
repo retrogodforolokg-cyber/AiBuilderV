@@ -14,14 +14,14 @@ import java.util.regex.*;
 public class GoAiCommand implements CommandExecutor {
 
     private final String API_KEY = "AIzaSyD4ZaA-ED5-NIftpWpDUNjQREwI1THzMgI";
-    private final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
+    private final String API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
     private final Gson gson = new Gson();
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd, @NotNull String label, @NotNull String[] args) {
         if (!(sender instanceof Player player)) return true;
         if (args.length == 0) {
-            player.sendMessage("§cНапиши: /goai <что построить>");
+            player.sendMessage("§cИспользуй: /goai <что построить>");
             return true;
         }
 
@@ -30,30 +30,26 @@ public class GoAiCommand implements CommandExecutor {
 
         Bukkit.getScheduler().runTaskAsynchronously(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
             try {
-                // ПРАВИЛЬНОЕ формирование JSON через объекты (исключает ошибки кавычек)
+                // Создаем запрос через объекты, чтобы избежать ошибок с кавычками
                 JsonObject textPart = new JsonObject();
-                textPart.addProperty("text", "Generate Minecraft 1.21 build schema for: " + userPrompt + 
-                    ". Output ONLY JSON array. Example: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]");
+                textPart.addProperty("text", "You are a Minecraft 1.21 builder. Create a build for: " + userPrompt + 
+                    ". Output ONLY a JSON array of blocks. Format: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. " +
+                    "Use valid Bukkit Material names. Max 100 blocks.");
 
                 JsonArray partsArray = new JsonArray();
                 partsArray.add(textPart);
-
                 JsonObject contentObject = new JsonObject();
                 contentObject.add("parts", partsArray);
-
                 JsonArray contentsArray = new JsonArray();
                 contentsArray.add(contentObject);
-
                 JsonObject root = new JsonObject();
                 root.add("contents", contentsArray);
-
-                String jsonPayload = gson.toJson(root);
 
                 HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(API_URL))
                         .header("Content-Type", "application/json")
-                        .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                        .POST(HttpRequest.BodyPublishers.ofString(gson.toJson(root)))
                         .build();
 
                 HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
@@ -61,10 +57,9 @@ public class GoAiCommand implements CommandExecutor {
 
                 Bukkit.getScheduler().runTask(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
                     try {
-                        parseAndBuild(player, body);
+                        handleBuild(player, body);
                     } catch (Exception e) {
-                        player.sendMessage("§cОшибка обработки: " + e.getMessage());
-                        Bukkit.getLogger().severe(body); // Лог в консоль для нас
+                        player.sendMessage("§cОшибка: " + e.getMessage());
                     }
                 });
 
@@ -75,11 +70,16 @@ public class GoAiCommand implements CommandExecutor {
         return true;
     }
 
-    private void parseAndBuild(Player player, String body) throws Exception {
+    private void handleBuild(Player player, String body) throws Exception {
         JsonObject json = JsonParser.parseString(body).getAsJsonObject();
         
         if (json.has("error")) {
-            player.sendMessage("§cОшибка API: " + json.getAsJsonObject("error").get("message").getAsString());
+            player.sendMessage("§cОшибка Google: " + json.getAsJsonObject("error").get("message").getAsString());
+            return;
+        }
+
+        if (!json.has("candidates")) {
+            player.sendMessage("§cИИ не ответил. Попробуй другой запрос.");
             return;
         }
 
@@ -87,6 +87,7 @@ public class GoAiCommand implements CommandExecutor {
                 .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
                 .get("text").getAsString();
 
+        // Извлекаем JSON массив из любого текста
         Matcher m = Pattern.compile("\\[[\\s\\S]*\\]").matcher(rawText);
         if (!m.find()) {
             player.sendMessage("§cИИ не прислал чертеж. Попробуй еще раз.");
@@ -109,6 +110,6 @@ public class GoAiCommand implements CommandExecutor {
                 count++;
             }
         }
-        player.sendMessage("§a§l[ИИ] Готово! §fБлоков: §e" + count);
+        player.sendMessage("§a§l[ИИ] Готово! §fРазмещено блоков: §e" + count);
     }
 }
