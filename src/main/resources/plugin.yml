@@ -1,0 +1,8 @@
+name: AiBuilder
+version: 1.0
+main: me.gemini.aibuilder.AiBuilder
+api-version: '1.21'
+commands:
+  goai:
+    description: Создать постройку с помощью ИИ
+    usage: /goai <описание>
