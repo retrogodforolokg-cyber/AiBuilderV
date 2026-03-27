@@ -14,38 +14,38 @@ import java.util.regex.*;
 public class GoAiCommand implements CommandExecutor {
 
     private final String API_KEY = "AIzaSyD4ZaA-ED5-NIftpWpDUNjQREwI1THzMgI";
-    private final String API_URL = "https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=" + API_KEY;
+    // ИСПРАВЛЕНО: v1beta и модель gemini-pro (флеш перестал отвечать)
+    private final String API_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro:generateContent?key=" + API_KEY;
     private final Gson gson = new Gson();
 
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command cmd, @NotNull String label, @NotNull String[] args) {
         if (!(sender instanceof Player player)) return true;
         if (args.length == 0) {
-            player.sendMessage("§cИспользуй: /goai <что построить>");
+            player.sendMessage("§cИспользование: /goai <что построить>");
             return true;
         }
 
-        String userPrompt = String.join(" ", args);
-        player.sendMessage("§6[ИИ] §eПроектирую... Пожалуйста, подожди.");
+        String prompt = String.join(" ", args);
+        player.sendMessage("§6[ИИ] §eЗапрос отправлен... Ждём ответ.");
 
         Bukkit.getScheduler().runTaskAsynchronously(Bukkit.getPluginManager().getPlugin("AiBuilder"), () -> {
             try {
-                // Создаем запрос через объекты, чтобы избежать ошибок с кавычками
+                // Создаем запрос максимально просто через объекты
                 JsonObject textPart = new JsonObject();
-                textPart.addProperty("text", "You are a Minecraft 1.21 builder. Create a build for: " + userPrompt + 
-                    ". Output ONLY a JSON array of blocks. Format: [{\"x\":0,\"y\":0,\"z\":0,\"type\":\"STONE\"}]. " +
-                    "Use valid Bukkit Material names. Max 100 blocks.");
+                // Уточняем, что ИИ не должен использовать JSON-маркеры в ответе
+                textPart.addProperty("text", "You are a Minecraft 1.21 architecture assistant. Generate a building schematic for: " + prompt + ". Output ONLY a plain JSON array of blocks. Example: [{\\\"x\\\":0,\\\"y\\\":0,\\\"z\\\":0,\\\"type\\\":\\\"STONE\\\"}]. No explanations or markdown.");
 
-                JsonArray partsArray = new JsonArray();
-                partsArray.add(textPart);
-                JsonObject contentObject = new JsonObject();
-                contentObject.add("parts", partsArray);
-                JsonArray contentsArray = new JsonArray();
-                contentsArray.add(contentObject);
+                JsonArray parts = new JsonArray();
+                parts.add(textPart);
+                JsonObject content = new JsonObject();
+                content.add("parts", parts);
+                JsonArray contents = new JsonArray();
+                contents.add(content);
                 JsonObject root = new JsonObject();
-                root.add("contents", contentsArray);
+                root.add("contents", contents);
 
-                HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(20)).build();
+                HttpClient client = HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(25)).build();
                 HttpRequest request = HttpRequest.newBuilder()
                         .uri(URI.create(API_URL))
                         .header("Content-Type", "application/json")
@@ -60,6 +60,7 @@ public class GoAiCommand implements CommandExecutor {
                         handleBuild(player, body);
                     } catch (Exception e) {
                         player.sendMessage("§cОшибка: " + e.getMessage());
+                        System.out.println("DEBUG API RESPONSE: " + body); // Лог в консоль
                     }
                 });
 
@@ -73,8 +74,9 @@ public class GoAiCommand implements CommandExecutor {
     private void handleBuild(Player player, String body) throws Exception {
         JsonObject json = JsonParser.parseString(body).getAsJsonObject();
         
+        // Обработка ошибок от Google
         if (json.has("error")) {
-            player.sendMessage("§cОшибка Google: " + json.getAsJsonObject("error").get("message").getAsString());
+            player.sendMessage("§cGoogle Error: " + json.getAsJsonObject("error").get("message").getAsString());
             return;
         }
 
@@ -87,7 +89,7 @@ public class GoAiCommand implements CommandExecutor {
                 .getAsJsonObject("content").getAsJsonArray("parts").get(0).getAsJsonObject()
                 .get("text").getAsString();
 
-        // Извлекаем JSON массив из любого текста
+        // Умная очистка: ищем массив JSON
         Matcher m = Pattern.compile("\\[[\\s\\S]*\\]").matcher(rawText);
         if (!m.find()) {
             player.sendMessage("§cИИ не прислал чертеж. Попробуй еще раз.");
@@ -95,21 +97,23 @@ public class GoAiCommand implements CommandExecutor {
         }
 
         JsonArray blocks = JsonParser.parseString(m.group()).getAsJsonArray();
-        Location loc = player.getLocation();
-        int count = 0;
+        Location playerLoc = player.getLocation();
+        int built = 0;
 
         for (JsonElement el : blocks) {
-            JsonObject b = el.getAsJsonObject();
-            String type = b.get("type").getAsString().toUpperCase().replace(" ", "_");
-            Material mat = Material.matchMaterial(type);
-            if (mat == null) mat = Material.OAK_PLANKS;
+            try {
+                JsonObject b = el.getAsJsonObject();
+                String materialName = b.get("type").getAsString().toUpperCase().replace(" ", "_");
+                Material mat = Material.matchMaterial(materialName);
+                if (mat == null) mat = Material.COBBLESTONE; // Камень, если ИИ ошибся в названии
 
-            if (mat.isBlock()) {
-                loc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt())
-                   .getBlock().setType(mat);
-                count++;
-            }
+                if (mat.isBlock()) {
+                    playerLoc.clone().add(b.get("x").getAsInt(), b.get("y").getAsInt(), b.get("z").getAsInt())
+                            .getBlock().setType(mat);
+                    built++;
+                }
+            } catch (Exception ignore) {}
         }
-        player.sendMessage("§a§l[ИИ] Готово! §fРазмещено блоков: §e" + count);
+        player.sendMessage("§a§l[ИИ] Успех! §fПостроено блоков: §e" + built);
     }
 }
